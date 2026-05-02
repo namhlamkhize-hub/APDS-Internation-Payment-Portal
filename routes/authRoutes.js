@@ -2,15 +2,15 @@ const jwt = require("jsonwebtoken");
 const express = require("express");
 const bcrypt = require("bcryptjs");
 const User = require("../models/User");
+const { registerValidation, validate } = require("../middleware/validators");
 
 const router = express.Router();
 
 // Register user
-router.post("/register", async (req, res) => {
+router.post("/register", registerValidation, validate, async (req, res) => {
   try {
     const { fullName, idNumber, accountNumber, username, password } = req.body;
 
-    // hash password
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(password, salt);
 
@@ -29,8 +29,8 @@ router.post("/register", async (req, res) => {
     console.error(error);
     res.status(500).json({ message: "Server error" });
   }
-}); 
- 
+});
+
 // Login user
 router.post("/login", async (req, res) => {
   try {
@@ -49,16 +49,15 @@ router.post("/login", async (req, res) => {
     }
 
     const token = jwt.sign(
-  { id: user._id, username: user.username },
-  process.env.JWT_SECRET,
-  { expiresIn: "1h" }
-);
+      { id: user._id, username: user.username },
+      process.env.JWT_SECRET,
+      { expiresIn: "1h" }
+    );
 
-res.json({
-  message: "Login successful",
-  token,
-});
-
+    res.json({
+      message: "Login successful",
+      token,
+    });
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: "Server error" });

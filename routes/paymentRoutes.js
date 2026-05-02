@@ -1,11 +1,12 @@
 const express = require("express");
 const authMiddleware = require("../middleware/authMiddleware");
 const Payment = require("../models/Payment");
+const { paymentValidation, validate } = require("../middleware/validators");
 
 const router = express.Router();
 
 // Create payment
-router.post("/", authMiddleware, async (req, res) => {
+router.post("/", authMiddleware, paymentValidation, validate, async (req, res) => {
   try {
     const { amount, currency, provider, accountInfo, swiftCode } = req.body;
 
@@ -25,13 +26,12 @@ router.post("/", authMiddleware, async (req, res) => {
     console.error(error);
     res.status(500).json({ message: "Server error" });
   }
-}); 
- 
+});
+
 // Get user payments
 router.get("/", authMiddleware, async (req, res) => {
   try {
     const payments = await Payment.find({ userId: req.user.id });
-
     res.json(payments);
   } catch (error) {
     console.error(error);
