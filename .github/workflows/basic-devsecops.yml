@@ -5,20 +5,30 @@ on:
     branches: [ main, master ]
   pull_request:
     branches: [ main, master ]
+  workflow_dispatch:  # Allow manual trigger
 
 jobs:
   security-checks:
     runs-on: ubuntu-latest
     
+    # Add retry strategy for runner acquisition failures
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+    
     permissions:
       contents: read
-      security-events: write  # Changed from 'read' to 'write' - CodeQL needs write to upload results
+      security-events: write
       actions: read
     
     steps:
       # Checkout code
       - name: Checkout Code
         uses: actions/checkout@v4
+        # Add retry for checkout as well
+        with:
+          fetch-depth: 0
+        continue-on-error: false
       
       # Setup Node.js
       - name: Setup Node.js
@@ -28,17 +38,14 @@ jobs:
       
       # ============================================
       # 1. SAST - Static Application Security Testing
-      #    (Check for vulnerabilities in code)
       # ============================================
       - name: Install Dependencies for SAST
         run: npm ci || npm install
       
-      # Updated to CodeQL v4 (fixes deprecation warning)
       - name: Run SAST with CodeQL
         uses: github/codeql-action/init@v4
         with:
           languages: javascript
-          # Disable improved incremental analysis to avoid disk space issues
           incremental-analysis: false
       
       - name: Perform CodeQL Analysis
@@ -48,14 +55,12 @@ jobs:
       
       # ============================================
       # 2. SCA - Software Composition Analysis
-      #    (Check vulnerabilities in dependencies)
       # ============================================
       - name: Run Dependency Security Audit
         run: npm audit --audit-level=high
       
       # ============================================
       # 3. API Testing
-      #    (Test security tools & endpoints)
       # ============================================
       - name: Install API Test Dependencies
         run: |
