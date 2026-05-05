@@ -1,4 +1,5 @@
 What the Minimal DevSecOps Pipeline Aims to Do
+
 The pipeline implements three core security testing practices (the "basics" of DevSecOps) that run automatically whenever code is pushed or a pull request is opened:
 
 1. SAST (Static Application Security Testing) - "Check for vulnerabilities in code"
@@ -17,6 +18,7 @@ Goal: Verify the application starts successfully and APIs are responsive
 Why it matters: Ensures basic functionality and that security middleware (like rate limiting) is working
 
 Tool Declaration
+
 The following list contains the tools used in the development of this project:
 - React
 - Node.js
