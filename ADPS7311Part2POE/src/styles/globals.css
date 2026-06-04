@@ -1,0 +1,109 @@
+/* ================================================
+   GLOBALS.CSS — SecureBank Portal Design System
+   Aesthetic: Refined Financial Dark Luxury
+   ================================================ */
+
+@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;600;700&family=DM+Sans:wght@300;400;500;600&display=swap');
+
+:root {
+  /* Core Palette */
+  --clr-bg:           #0a0d14;
+  --clr-surface:      #111520;
+  --clr-surface-2:    #161c2d;
+  --clr-border:       rgba(255, 255, 255, 0.07);
+  --clr-border-hover: rgba(200, 170, 100, 0.4);
+
+  /* Gold Accent */
+  --clr-gold:         #c8aa64;
+  --clr-gold-light:   #e0c98a;
+  --clr-gold-dim:     rgba(200, 170, 100, 0.15);
+
+  /* Text */
+  --clr-text:         #e8e4da;
+  --clr-text-muted:   #7a7d8a;
+  --clr-text-faint:   #3d404d;
+
+  /* Feedback */
+  --clr-success:      #4caf78;
+  --clr-error:        #e05c5c;
+
+  /* Typography */
+  --font-display:     'Playfair Display', Georgia, serif;
+  --font-body:        'DM Sans', system-ui, sans-serif;
+
+  /* Spacing */
+  --space-xs:   4px;
+  --space-sm:   8px;
+  --space-md:   16px;
+  --space-lg:   24px;
+  --space-xl:   40px;
+  --space-2xl:  64px;
+
+  /* Radius */
+  --radius-sm:  4px;
+  --radius-md:  8px;
+  --radius-lg:  16px;
+
+  /* Shadows */
+  --shadow-card: 0 8px 48px rgba(0, 0, 0, 0.6), 0 1px 0 rgba(255,255,255,0.04) inset;
+  --shadow-gold: 0 0 24px rgba(200, 170, 100, 0.18);
+
+  /* Transitions */
+  --transition: 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  scroll-behavior: smooth;
+  font-size: 16px;
+}
+
+body {
+  font-family: var(--font-body);
+  background-color: var(--clr-bg);
+  color: var(--clr-text);
+  line-height: 1.6;
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+
+  /* Subtle noise texture */
+  background-image:
+    radial-gradient(ellipse 80% 60% at 50% -20%, rgba(200, 170, 100, 0.06) 0%, transparent 70%),
+    url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.03'/%3E%3C/svg%3E");
+}
+
+#root {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+a {
+  color: var(--clr-gold);
+  text-decoration: none;
+  transition: color var(--transition);
+}
+
+a:hover {
+  color: var(--clr-gold-light);
+}
+
+button {
+  cursor: pointer;
+  font-family: var(--font-body);
+}
+
+input, select, textarea {
+  font-family: var(--font-body);
+}
+
+h1, h2, h3, h4 {
+  font-family: var(--font-display);
+  line-height: 1.2;
+}
