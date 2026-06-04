@@ -1,4 +1,4 @@
-const BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+const BASE_URL = import.meta.env.VITE_API_URL || 'https://apds-internation-payment-portal.onrender.com';
 
 export async function loginUser({ username, password }) {
   const res = await fetch(`${BASE_URL}/api/auth/login`, {
