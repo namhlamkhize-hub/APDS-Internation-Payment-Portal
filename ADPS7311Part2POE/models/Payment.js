@@ -26,6 +26,14 @@ const paymentSchema = new mongoose.Schema({
     type: String,
     required: true,
   },
+  verified: {
+    type: Boolean,
+    default: false,
+  },
+  verifiedBy: {
+    type: String,
+    default: null,
+  },
 }, { timestamps: true });
 
 module.exports = mongoose.model("Payment", paymentSchema);

@@ -6,7 +6,7 @@ const { registerValidation, validate } = require("../middleware/validators");
 
 const router = express.Router();
 
-// Register user
+// Register user (customers only)
 router.post("/register", registerValidation, validate, async (req, res) => {
   try {
     const { fullName, idNumber, accountNumber, username, password } = req.body;
@@ -20,6 +20,7 @@ router.post("/register", registerValidation, validate, async (req, res) => {
       accountNumber,
       username,
       password: hashedPassword,
+      role: "customer",
     });
 
     await user.save();
@@ -49,7 +50,7 @@ router.post("/login", async (req, res) => {
     }
 
     const token = jwt.sign(
-      { id: user._id, username: user.username },
+      { id: user._id, username: user.username, role: user.role },
       process.env.JWT_SECRET,
       { expiresIn: "1h" }
     );
@@ -57,6 +58,7 @@ router.post("/login", async (req, res) => {
     res.json({
       message: "Login successful",
       token,
+      role: user.role,
     });
   } catch (error) {
     console.error(error);
