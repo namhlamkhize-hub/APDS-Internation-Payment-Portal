@@ -30,12 +30,35 @@ export async function submitPayment({ amount, currency, provider, recipientAccou
     },
     body: JSON.stringify({
       amount: parseFloat(amount),
-      currency: currency.split(' ')[0],  // "ZAR – South African Rand" → "ZAR"
+      currency: currency.split(' ')[0],
       provider,
-      accountInfo: recipientAccount,      // backend expects "accountInfo"
+      accountInfo: recipientAccount,
       swiftCode: swiftCode.toUpperCase(),
     }),
   });
   if (!res.ok) throw new Error((await res.json()).message || 'Payment failed');
+  return res.json();
+}
+
+export async function getAllPayments() {
+  const token = localStorage.getItem('token');
+  const res = await fetch(`${BASE_URL}/api/payments/all`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+  if (!res.ok) throw new Error('Failed to fetch payments');
+  return res.json();
+}
+
+export async function verifyPayment(id) {
+  const token = localStorage.getItem('token');
+  const res = await fetch(`${BASE_URL}/api/payments/${id}/verify`, {
+    method: 'PUT',
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+  if (!res.ok) throw new Error('Failed to verify payment');
   return res.json();
 }
