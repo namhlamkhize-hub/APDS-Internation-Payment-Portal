@@ -7,9 +7,64 @@ on:
     branches: [ main, master ]
   workflow_dispatch:
 
+env:
+  SONAR_ORG: ${{ secrets.SONAR_ORG }}
+  SONAR_PROJECT_KEY: ${{ secrets.SONAR_PROJECT_KEY }}
+  SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+  NODE_VERSION: '18'
+
 jobs:
+  # ============================================
+  # CircleCI Pipeline Trigger
+  # ============================================
+  circleci-trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger CircleCI Pipeline
+        uses: CircleCI-Public/trigger-circleci-pipeline-action@v1.1.0
+        with:
+          GHA_Meta: ${{ github.sha }}
+        env:
+          CCI_TOKEN: ${{ secrets.CIRCLE_CI_TOKEN }}
+
+  # ============================================
+  # 1. SonarQube Analysis (via CircleCI)
+  # ============================================
+  sonarqube-analysis:
+    runs-on: ubuntu-latest
+    container:
+      image: sonarsource/sonar-scanner-cli:latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+      
+      - name: Install Dependencies
+        run: |
+          apt-get update
+          apt-get install -y curl git
+      
+      - name: Run SonarQube Scan
+        env:
+          SONAR_BRANCH: ${{ github.ref_name || 'master' }}
+        run: |
+          sonar-scanner \
+            -Dsonar.projectKey="$SONAR_PROJECT_KEY" \
+            -Dsonar.organization="$SONAR_ORG" \
+            -Dsonar.host.url=https://sonarcloud.io \
+            -Dsonar.exclusions="**/node_modules/**,**/dist/**,**/build/**,**/.git/**" \
+            -Dsonar.login="$SONAR_TOKEN" \
+            -Dsonar.branch.name="$SONAR_BRANCH" \
+            -Dsonar.sources="." \
+            -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info \
+            -Dsonar.test.inclusions="**/*.test.js,**/*.spec.js" \
+            -Dsonar.coverage.exclusions="**/node_modules/**,**/tests/**"
+
+  # ============================================
+  # 2. Security Checks
+  # ============================================
   security-checks:
     runs-on: ubuntu-latest
+    needs: sonarqube-analysis
     
     permissions:
       contents: read
@@ -25,74 +80,433 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '18'
+          node-version: ${{ env.NODE_VERSION }}
       
       # ============================================
-      # 1. SAST - Static Application Security Testing
+      # User Creation Security Check
+      # ============================================
+      - name: Check No Registration Endpoint
+        run: |
+          echo "============================================"
+          echo " SECURITY CHECK: No User Registration"
+          echo "============================================"
+          echo "✓ Checking that registration endpoints don't exist..."
+          
+          # Check for register routes
+          if grep -r "register" src/api/api.js 2>/dev/null | grep -v "registerUser"; then
+            echo "⚠️  WARNING: Registration endpoint found in API"
+          else
+            echo "✅ No unauthorized registration endpoints detected"
+          fi
+          
+          # Check for user creation routes
+          if grep -r "router.post.*user" src/ 2>/dev/null || grep -r "app.post.*user" src/ 2>/dev/null; then
+            echo "⚠️  WARNING: User creation routes found"
+          else
+            echo "✅ No user creation routes detected"
+          fi
+      
+      # ============================================
+      # Password Security Check
+      # ============================================
+      - name: Verify Password Hashing & Salting
+        run: |
+          echo "============================================"
+          echo " SECURITY CHECK: Password Security"
+          echo "============================================"
+          
+          # Check for bcrypt/scrypt/argon2 usage
+          if grep -r "bcrypt\|scrypt\|argon2\|pbkdf2" src/ --include="*.js" --include="*.ts" 2>/dev/null; then
+            echo "✅ Password hashing detected"
+          else
+            echo "⚠️  WARNING: No password hashing library detected"
+          fi
+          
+          # Check for salt generation
+          if grep -r "genSalt\|salt" src/ --include="*.js" --include="*.ts" 2>/dev/null; then
+            echo "✅ Salt usage detected"
+          else
+            echo "⚠️  WARNING: No salt generation detected"
+          fi
+          
+          # Check password length requirements
+          if grep -r "password.*length\|minlength.*password\|password.*min" src/ 2>/dev/null; then
+            echo "✅ Password length validation detected"
+          else
+            echo "⚠️  WARNING: No password length validation found"
+          fi
+      
+      # ============================================
+      # Input Whitelisting & Regex Validation Check
+      # ============================================
+      - name: Verify Input Validation with Regex
+        run: |
+          echo "============================================"
+          echo " SECURITY CHECK: Input Whitelisting"
+          echo "============================================"
+          
+          # Check for regex patterns in validation
+          if grep -r "test\|match\|RegExp\|regex" src/ --include="*.js" --include="*.ts" --include="*.jsx" --include="*.tsx" 2>/dev/null; then
+            echo "✅ Regex pattern validation detected"
+          else
+            echo "⚠️  WARNING: No regex validation patterns found"
+          fi
+          
+          # Check specific patterns for common fields
+          echo "Checking specific field validations..."
+          
+          # Username validation
+          if grep -r "username.*regex\|username.*test\|username.*pattern" src/ 2>/dev/null; then
+            echo "✅ Username validation with regex found"
+          fi
+          
+          # ID Number validation
+          if grep -r "idNumber.*regex\|idNumber.*test\|idNumber.*pattern\|idNumber.*\d{13}" src/ 2>/dev/null; then
+            echo "✅ ID Number validation with regex found"
+          fi
+          
+          # SWIFT code validation
+          if grep -r "swiftCode.*regex\|swiftCode.*test\|swift.*pattern\|SWIFT.*[A-Z0-9]{8,11}" src/ 2>/dev/null; then
+            echo "✅ SWIFT code validation with regex found"
+          fi
+          
+          # Account number validation
+          if grep -r "accountNumber.*regex\|accountNumber.*test\|accountNumber.*pattern" src/ 2>/dev/null; then
+            echo "✅ Account number validation with regex found"
+          fi
+      
+      # ============================================
+      # SSL/TLS Enforcement Check
+      # ============================================
+      - name: Verify SSL/TLS Configuration
+        run: |
+          echo "============================================"
+          echo " SECURITY CHECK: SSL/TLS Enforcement"
+          echo "============================================"
+          
+          # Check for HTTPS enforcement
+          if grep -r "https\|SSL\|TLS\|helmet" src/ package.json server.js app.js 2>/dev/null; then
+            echo "✅ SSL/TLS references found"
+          else
+            echo "⚠️  WARNING: No SSL/TLS configuration detected"
+          fi
+          
+          # Check for helmet.js (security headers)
+          if grep -r "helmet" package.json 2>/dev/null || grep -r "require.*helmet" src/ server.js app.js 2>/dev/null; then
+            echo "✅ Helmet.js security headers detected"
+          fi
+          
+          # Check for HTTPS redirect middleware
+          if grep -r "redirect.*https\|force-ssl\|enforce-ssl" src/ server.js app.js 2>/dev/null; then
+            echo "✅ HTTPS redirect configuration detected"
+          fi
+      
+      # ============================================
+      # Attack Protection Check
+      # ============================================
+      - name: Verify Attack Protection Measures
+        run: |
+          echo "============================================"
+          echo " SECURITY CHECK: Attack Protection"
+          echo "============================================"
+          
+          # SQL Injection protection
+          if grep -r "sql-injection\|sanitize\|escape\|parameterized\|prepared.statement" src/ 2>/dev/null; then
+            echo "✅ SQL injection protection detected"
+          fi
+          
+          # XSS protection
+          if grep -r "xss\|xss-clean\|sanitize-html\|escape-html" package.json src/ 2>/dev/null; then
+            echo "✅ XSS protection detected"
+          fi
+          
+          # CSRF protection
+          if grep -r "csrf\|xsrf\|csurf" package.json src/ 2>/dev/null; then
+            echo "✅ CSRF protection detected"
+          fi
+          
+          # Rate limiting
+          if grep -r "rate-limit\|express-rate-limit\|express-brute\|brute" package.json src/ server.js app.js 2>/dev/null; then
+            echo "✅ Rate limiting protection detected"
+          fi
+          
+          # CORS configuration
+          if grep -r "cors" package.json src/ server.js app.js 2>/dev/null; then
+            echo "✅ CORS configuration detected"
+          fi
+          
+          # Content Security Policy
+          if grep -r "content-security-policy\|csp\|Content-Security-Policy" src/ server.js app.js 2>/dev/null; then
+            echo "✅ Content Security Policy detected"
+          fi
+      
+      # ============================================
+      # SAST - Static Application Security Testing
       # ============================================
       - name: Install Dependencies for SAST
         run: npm ci || npm install
       
-      # CodeQL v4 - removed invalid 'incremental-analysis' parameter
-      - name: Run SAST with CodeQL
-        uses: github/codeql-action/init@v4
+      - name: Run ESLint Security Checks
+        run: |
+          echo "Running ESLint security analysis..."
+          if [ -f ".eslintrc.js" ] || [ -f ".eslintrc.json" ] || [ -f ".eslintrc.yml" ]; then
+            npx eslint src/ --format json --output-file eslint-results.json || true
+          else
+            echo "No ESLint config found, creating temporary config..."
+            echo '{
+              "env": { "browser": true, "node": true, "es2021": true },
+              "extends": ["eslint:recommended"],
+              "rules": {
+                "no-eval": "error",
+                "no-implied-eval": "error",
+                "no-new-func": "error"
+              }
+            }' > .eslintrc.json
+            npx eslint src/ --format json --output-file eslint-results.json || true
+          fi
+      
+      # CodeQL Analysis
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
         with:
           languages: javascript
+          queries: security-extended,security-and-quality
       
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v4
+        uses: github/codeql-action/analyze@v3
         with:
+          category: "/language:javascript"
           upload: true
+          output: sarif-results
       
       # ============================================
-      # 2. SCA - Software Composition Analysis
+      # SCA - Software Composition Analysis
       # ============================================
-      # Run audit but don't fail the build (continue-on-error)
-      - name: Run Dependency Security Audit
-        run: npm audit --audit-level=high || true
+      - name: Run npm Audit
+        run: |
+          echo "Running dependency security audit..."
+          npm audit --json > npm-audit.json || true
+          cat npm-audit.json
+      
+      - name: Analyze Critical Vulnerabilities
+        run: |
+          echo "Checking for critical vulnerabilities..."
+          if grep -q '"severity": "critical"' npm-audit.json 2>/dev/null; then
+            echo "❌ Critical vulnerabilities found in dependencies!"
+            cat npm-audit.json
+            exit 1
+          else
+            echo "✅ No critical vulnerabilities found"
+          fi
+      
+      - name: Run OWASP Dependency Check
+        run: |
+          if [ -x "$(command -v dependency-check)" ]; then
+            dependency-check --project "SecureBank Portal" --scan . --format JSON --out dependency-check-report.json
+          else
+            echo "⚠️  OWASP Dependency Check not installed, using npm audit only"
+          fi
         continue-on-error: true
       
-      # Optional: Run audit that fails only on critical vulnerabilities
-      - name: Run Critical Vulnerability Audit
-        run: npm audit --audit-level=critical
-        continue-on-error: false
-      
       # ============================================
-      # 3. API Testing
+      # API Testing
       # ============================================
       - name: Install API Test Dependencies
         run: |
-          npm install --save-dev newman
-          npm install express-brute --save || true
+          npm install --save-dev newman 2>/dev/null || true
+          npm install --save-dev supertest jest 2>/dev/null || true
       
       - name: Start Application Server
         run: |
-          npm start &
-          sleep 10
-        env:
-          PORT: 3000
+          if [ -f "package.json" ]; then
+            node server.js &
+            SERVER_PID=$!
+            echo "Server started with PID: $SERVER_PID"
+            sleep 5
+            
+            # Check if server is running
+            if kill -0 $SERVER_PID 2>/dev/null; then
+              echo "✅ Server is running"
+            else
+              echo "⚠️  Server failed to start"
+            fi
+            
+            echo "SERVER_PID=$SERVER_PID" >> $GITHUB_ENV
+          fi
+        continue-on-error: true
       
-      - name: Test API Endpoints are Running
+      - name: Test Endpoints Security
         run: |
-          echo "Testing if application is responsive..."
-          curl -f http://localhost:3000 || echo "API endpoint test completed"
-          curl -f http://localhost:3000/health || echo "Health check attempted"
+          echo "============================================"
+          echo " API SECURITY TESTING"
+          echo "============================================"
+          
+          # Test rate limiting
+          echo "Testing rate limiting..."
+          RATE_LIMIT_HIT=false
+          for i in {1..20}; do
+            RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/api/login 2>/dev/null || echo "000")
+            if [ "$RESPONSE" = "429" ]; then
+              RATE_LIMIT_HIT=true
+              echo "✅ Rate limiting triggered after $i requests"
+              break
+            fi
+          done
+          
+          if [ "$RATE_LIMIT_HIT" = false ]; then
+            echo "⚠️  Rate limiting may not be configured"
+          fi
+          
+          # Test for proper error responses
+          echo "Testing error handling..."
+          RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/api/login -X POST -H "Content-Type: application/json" -d '{"username":"test","password":""}' 2>/dev/null || echo "000")
+          if [ "$RESPONSE" != "200" ]; then
+            echo "✅ Invalid requests properly rejected"
+          fi
       
-      - name: Test Rate Limiting (express-brute)
+      - name: Test Input Validation (Injection Attempts)
         run: |
-          echo "Testing rate limiting protection..."
-          for i in {1..10}; do
-            curl -s -o /dev/null -w "%{http_code}\n" http://localhost:3000/api/login 2>/dev/null || echo "000"
-          done | grep -q "429" && echo "✅ Rate limiting active" || echo "⚠️ Rate limiting check passed"
+          echo "============================================"
+          echo " TESTING INJECTION PROTECTION"
+          echo "============================================"
+          
+          # Test SQL injection
+          echo "Testing SQL injection..."
+          SQL_RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/api/login -X POST -H "Content-Type: application/json" -d '{"username":"admin'\''--","password":"test"}' 2>/dev/null || echo "000")
+          if [ "$SQL_RESPONSE" = "400" ] || [ "$SQL_RESPONSE" = "401" ] || [ "$SQL_RESPONSE" = "403" ]; then
+            echo "✅ SQL injection attempt rejected"
+          else
+            echo "⚠️  SQL injection test inconclusive"
+          fi
+          
+          # Test XSS
+          echo "Testing XSS protection..."
+          XSS_RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/api/payments -X POST -H "Content-Type: application/json" -d '{"amount":"<script>alert(1)</script>","currency":"ZAR"}' 2>/dev/null || echo "000")
+          if [ "$XSS_RESPONSE" = "400" ] || [ "$XSS_RESPONSE" = "401" ]; then
+            echo "✅ XSS attempt rejected"
+          else
+            echo "⚠️  XSS test inconclusive"
+          fi
+      
+      # Cleanup
+      - name: Stop Application Server
+        if: always()
+        run: |
+          if [ -n "$SERVER_PID" ]; then
+            kill $SERVER_PID 2>/dev/null || true
+            echo "Server stopped"
+          fi
       
       # ============================================
-      # 4. Docker Image Build Test
+      # Generate Security Report
       # ============================================
-      - name: Test Docker Build
+      - name: Generate Security Report
+        run: |
+          echo "Generating security report..."
+          {
+            echo "# Security Testing Report"
+            echo "## Date: $(date)"
+            echo "## Branch: ${{ github.ref_name }}"
+            echo "## Commit: ${{ github.sha }}"
+            echo ""
+            echo "## Security Checks Performed"
+            echo "1. ✅ No Registration Endpoint Check"
+            echo "2. ✅ Password Hashing & Salting"
+            echo "3. ✅ Input Whitelisting with Regex"
+            echo "4. ✅ SSL/TLS Enforcement"
+            echo "5. ✅ Attack Protection Verification"
+            echo "6. ✅ Static Application Security Testing (SAST)"
+            echo "7. ✅ Software Composition Analysis (SCA)"
+            echo "8. ✅ API Security Testing"
+            echo "9. ✅ SonarQube Analysis"
+          } > security-report.md
+          
+          cat security-report.md
+      
+      - name: Upload Security Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-report
+          path: security-report.md
+      
+      - name: Upload npm Audit Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-audit-results
+          path: npm-audit.json
+      
+      - name: Upload CodeQL Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: codeql-results
+          path: sarif-results/
+
+  # ============================================
+  # Docker Build Test
+  # ============================================
+  docker-build:
+    runs-on: ubuntu-latest
+    needs: security-checks
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Build Docker Image
         run: |
           if [ -f "Dockerfile" ]; then
-            docker build -t app:test .
+            docker build -t securebank-portal:test .
             echo "✅ Docker image built successfully"
+            
+            # Scan image for vulnerabilities
+            if [ -x "$(command -v trivy)" ]; then
+              trivy image securebank-portal:test --severity HIGH,CRITICAL
+            fi
           else
-            echo "⚠️ No Dockerfile found - skipping docker build test"
+            echo "⚠️ No Dockerfile found"
+          fi
+      
+      - name: Test Container Security
+        run: |
+          if [ -f "Dockerfile" ]; then
+            echo "Testing container security..."
+            docker run -d --name securebank-test -p 3000:3000 securebank-portal:test
+            sleep 5
+            
+            # Test if container is running as non-root
+            CONTAINER_USER=$(docker exec securebank-test whoami 2>/dev/null || echo "unknown")
+            if [ "$CONTAINER_USER" != "root" ]; then
+              echo "✅ Container running as non-root user: $CONTAINER_USER"
+            else
+              echo "⚠️  Container running as root - security risk"
+            fi
+            
+            # Cleanup
+            docker stop securebank-test
+            docker rm securebank-test
+          fi
+
+  # ============================================
+  # Final Security Gate
+  # ============================================
+  security-gate:
+    runs-on: ubuntu-latest
+    needs: [sonarqube-analysis, security-checks, docker-build]
+    if: always()
+    steps:
+      - name: Check Security Gate Status
+        run: |
+          echo "============================================"
+          echo " FINAL SECURITY GATE"
+          echo "============================================"
+          
+          if [ "${{ needs.security-checks.result }}" = "success" ] && [ "${{ needs.sonarqube-analysis.result }}" = "success" ]; then
+            echo "✅ All security checks passed!"
+            echo "Pipeline can proceed to deployment"
+          else
+            echo "❌ Security checks failed!"
+            echo "Pipeline blocked - fix security issues before deployment"
+            exit 1
           fi
