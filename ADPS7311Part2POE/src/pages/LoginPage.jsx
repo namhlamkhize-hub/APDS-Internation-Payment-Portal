@@ -48,7 +48,16 @@ function LoginPage() {
       const data = await loginUser({ username: form.username, password: form.password })
       localStorage.setItem('token', data.token)
       setStatus('success')
-      setTimeout(() => navigate('/payment'), 1500)
+      
+      // Role-based redirect
+      setTimeout(() => {
+        if (data.role === 'employee') {
+          navigate('/employee-dashboard')
+        } else {
+          // Default to customer payment page
+          navigate('/payment')
+        }
+      }, 1500)
     } catch {
       setStatus('error')
     } finally {
