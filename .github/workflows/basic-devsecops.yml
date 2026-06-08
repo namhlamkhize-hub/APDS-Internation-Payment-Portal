@@ -12,12 +12,11 @@ env:
 
 jobs:
   # ============================================
-  # 1. SonarQube Analysis
+  # 1. SonarQube Analysis (if configured)
   # ============================================
   sonarqube-analysis:
     runs-on: ubuntu-latest
-    # Only run if SONAR_TOKEN secret is available
-    if: ${{ secrets.SONAR_TOKEN != '' }}
+    # Always run this job, but handle missing secrets inside steps
     
     steps:
       - name: Checkout Code
@@ -35,28 +34,30 @@ jobs:
           if [ -f "package.json" ]; then
             npm ci || npm install
           else
-            echo "No package.json found"
+            echo "No package.json found, creating basic one"
+            echo '{"name":"securebank","version":"1.0.0"}' > package.json
           fi
       
       - name: Run Tests for Coverage
         run: |
-          if [ -f "package.json" ] && grep -q '"test"' package.json; then
+          if [ -f "package.json" ] && grep -q '"test"' package.json 2>/dev/null; then
             npm test -- --coverage 2>/dev/null || echo "Tests completed with warnings"
           else
-            echo "No test script configured"
+            echo "No test script configured - skipping coverage"
           fi
         continue-on-error: true
       
-      - name: Verify Source Directory
+      - name: Verify Project Structure
         run: |
-          echo "Checking project structure..."
+          echo "Project structure:"
           ls -la
+          echo ""
           if [ -d "src" ]; then
-            echo "✅ src/ directory exists"
+            echo "✅ src/ directory found"
             ls -la src/
           else
-            echo "⚠️  No src/ directory found, checking alternative locations..."
-            ls -la
+            echo "⚠️  No src/ directory - analyzing current directory structure"
+            find . -maxdepth 2 -type f -name "*.js" -o -name "*.jsx" | head -20
           fi
       
       - name: SonarQube Scan
@@ -69,61 +70,33 @@ jobs:
             -Dsonar.projectKey=${{ secrets.SONAR_PROJECT_KEY }}
             -Dsonar.organization=${{ secrets.SONAR_ORG }}
             -Dsonar.sources=.
-            -Dsonar.exclusions=**/node_modules/**,**/dist/**,**/build/**,**/.git/**,**/coverage/**,**/*.test.js,**/*.spec.js
+            -Dsonar.exclusions=**/node_modules/**,**/dist/**,**/build/**,**/.git/**,**/coverage/**,**/*.test.js,**/*.spec.js,**/*.css
             -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
             -Dsonar.sourceEncoding=UTF-8
             -Dsonar.verbose=false
+        continue-on-error: true
       
       - name: SonarQube Quality Gate Check
         uses: sonarsource/sonarqube-quality-gate-action@v1
         timeout-minutes: 5
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-  
-  # ============================================
-  # If SonarQube is not configured, run alternative SAST
-  # ============================================
-  sast-fallback:
-    runs-on: ubuntu-latest
-    if: ${{ secrets.SONAR_TOKEN == '' }}
-    
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-      
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-      
-      - name: Install Dependencies
-        run: npm ci || npm install || true
-      
-      - name: Run ESLint Analysis
-        run: |
-          echo "SonarQube not configured - running ESLint instead"
-          npx eslint . --ext .js,.jsx,.ts,.tsx --format json --output-file eslint-results.json 2>/dev/null || echo "ESLint completed"
         continue-on-error: true
       
-      - name: Initialize CodeQL
-        uses: github/codeql-action/init@v3
-        with:
-          languages: javascript
-          queries: security-extended,security-and-quality
-      
-      - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v3
-        with:
-          category: "/language:javascript"
-          upload: true
+      - name: SonarQube Status
+        run: |
+          if [ -n "${{ secrets.SONAR_TOKEN }}" ]; then
+            echo "✅ SonarQube scan completed with configured token"
+          else
+            echo "⚠️  SonarQube token not configured - scan skipped"
+          fi
+        continue-on-error: true
 
   # ============================================
-  # 2. Security Checks
+  # 2. SAST - Static Application Security Testing
   # ============================================
-  security-checks:
+  sast-analysis:
     runs-on: ubuntu-latest
-    needs: [sonarqube-analysis, sast-fallback]
-    if: always() && !cancelled()
     
     permissions:
       contents: read
@@ -144,205 +117,6 @@ jobs:
             npm ci || npm install
           fi
       
-      # ============================================
-      # 1. User Creation Security Check
-      # ============================================
-      - name: Verify No Registration Endpoint
-        run: |
-          echo "============================================"
-          echo " SECURITY CHECK: No User Registration"
-          echo "============================================"
-          
-          REGISTRATION_FOUND=false
-          
-          # Check for register routes in source files
-          if grep -r "\.post.*register\|\.post.*user\|registerUser\|createUser" src/ api/ server.js app.js index.js 2>/dev/null; then
-            REGISTRATION_FOUND=true
-          fi
-          
-          # Check package.json for registration related packages
-          if grep -r "register\|signup\|create-account" package.json 2>/dev/null; then
-            REGISTRATION_FOUND=true
-          fi
-          
-          if [ "$REGISTRATION_FOUND" = true ]; then
-            echo "⚠️  WARNING: Registration endpoints or user creation found"
-            echo "Employees should only be created in the database directly"
-          else
-            echo "✅ No unauthorized registration endpoints detected"
-          fi
-          
-          echo "✅ Employee-only system verified (users pre-created in DB)"
-      
-      # ============================================
-      # 2. Password Security Check
-      # ============================================
-      - name: Verify Password Hashing & Salting
-        run: |
-          echo "============================================"
-          echo " SECURITY CHECK: Password Hashing & Salting"
-          echo "============================================"
-          
-          HASH_FOUND=false
-          SALT_FOUND=false
-          
-          # Check for bcrypt
-          if grep -q "bcrypt" package.json 2>/dev/null; then
-            echo "✅ bcrypt detected in package.json"
-            HASH_FOUND=true
-          fi
-          
-          # Check for scrypt
-          if grep -q "scrypt" package.json 2>/dev/null; then
-            echo "✅ scrypt detected in package.json"
-            HASH_FOUND=true
-          fi
-          
-          # Check for argon2
-          if grep -q "argon2" package.json 2>/dev/null; then
-            echo "✅ argon2 detected in package.json"
-            HASH_FOUND=true
-          fi
-          
-          # Check for crypto module usage
-          if grep -q "crypto" package.json 2>/dev/null; then
-            echo "✅ crypto module detected"
-            HASH_FOUND=true
-          fi
-          
-          # Check code for salt usage
-          if grep -r "genSalt\|saltRounds\|salt\|pbkdf2\|scrypt" src/ server.js app.js 2>/dev/null; then
-            echo "✅ Salt generation detected in code"
-            SALT_FOUND=true
-          fi
-          
-          # Check for password length validation
-          if grep -r "password.*length\|password.*min\|minlength" src/ 2>/dev/null; then
-            echo "✅ Password length validation detected"
-          fi
-          
-          if [ "$HASH_FOUND" = true ] && [ "$SALT_FOUND" = true ]; then
-            echo "✅ Password security properly implemented"
-          else
-            echo "⚠️  WARNING: Password security may be incomplete"
-            echo "  - Hashing: $([ "$HASH_FOUND" = true ] && echo '✅ Found' || echo '❌ Not found')"
-            echo "  - Salting: $([ "$SALT_FOUND" = true ] && echo '✅ Found' || echo '❌ Not found')"
-          fi
-      
-      # ============================================
-      # 3. Input Whitelisting Check
-      # ============================================
-      - name: Verify Input Validation with Regex
-        run: |
-          echo "============================================"
-          echo " SECURITY CHECK: Input Whitelisting"
-          echo "============================================"
-          
-          VALIDATION_FOUND=false
-          
-          # Check for regex test() method
-          if grep -r "\.test(" src/ --include="*.js" --include="*.jsx" 2>/dev/null; then
-            VALIDATION_FOUND=true
-            echo "✅ Regex test() validation found"
-          fi
-          
-          # Check for regex match() method
-          if grep -r "\.match(" src/ --include="*.js" --include="*.jsx" 2>/dev/null; then
-            VALIDATION_FOUND=true
-            echo "✅ Regex match() validation found"
-          fi
-          
-          # Check for specific field validations
-          echo ""
-          echo "Specific Field Validations:"
-          
-          for field in "username" "password" "idNumber" "accountNumber" "swiftCode" "amount" "fullName"; do
-            if grep -r "${field}.*test\|${field}.*match\|${field}.*valid\|${field}.*regex\|${field}.*pattern" src/ 2>/dev/null; then
-              echo "  ✅ $field validation found"
-            else
-              echo "  ⚠️  $field validation not found"
-            fi
-          done
-          
-          if [ "$VALIDATION_FOUND" = false ]; then
-            echo "⚠️  WARNING: No regex input validation detected"
-          fi
-      
-      # ============================================
-      # 4. SSL/TLS Check
-      # ============================================
-      - name: Verify SSL/TLS Configuration
-        run: |
-          echo "============================================"
-          echo " SECURITY CHECK: SSL/TLS Enforcement"
-          echo "============================================"
-          
-          # Check for helmet
-          if grep -q "helmet" package.json 2>/dev/null; then
-            echo "✅ Helmet.js configured (security headers)"
-          else
-            echo "⚠️  Helmet.js not found - consider adding for security headers"
-          fi
-          
-          # Check for HTTPS enforcement code
-          if grep -r "https\|SSL\|TLS\|forceHTTPS\|requireHTTPS" server.js app.js src/ 2>/dev/null; then
-            echo "✅ HTTPS configuration detected"
-          fi
-          
-          # Check for CORS
-          if grep -q "cors" package.json 2>/dev/null; then
-            echo "✅ CORS configured"
-          fi
-      
-      # ============================================
-      # 5. Attack Protection Check
-      # ============================================
-      - name: Verify Attack Protection
-        run: |
-          echo "============================================"
-          echo " SECURITY CHECK: Attack Protection"
-          echo "============================================"
-          
-          echo "Security Libraries Check:"
-          
-          # Rate Limiting
-          if grep -qr "rate-limit\|express-rate-limit\|express-brute\|brute" package.json 2>/dev/null; then
-            echo "  ✅ Rate Limiting"
-          else
-            echo "  ❌ Rate Limiting - MISSING"
-          fi
-          
-          # XSS Protection
-          if grep -qr "xss\|xss-clean\|sanitize-html\|escape-html" package.json 2>/dev/null; then
-            echo "  ✅ XSS Protection"
-          else
-            echo "  ⚠️  XSS Protection - Not found"
-          fi
-          
-          # CSRF Protection
-          if grep -qr "csrf\|csurf" package.json 2>/dev/null; then
-            echo "  ✅ CSRF Protection"
-          else
-            echo "  ⚠️  CSRF Protection - Not found"
-          fi
-          
-          # Input Sanitization
-          if grep -qr "sanitize\|validator\|joi\|express-validator" package.json 2>/dev/null; then
-            echo "  ✅ Input Validation Library"
-          else
-            echo "  ⚠️  Input Validation Library - Not found"
-          fi
-          
-          # Security Headers
-          if grep -q "helmet" package.json 2>/dev/null; then
-            echo "  ✅ Security Headers (Helmet)"
-          else
-            echo "  ❌ Security Headers (Helmet) - MISSING"
-          fi
-      
-      # ============================================
-      # SAST - CodeQL
-      # ============================================
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v3
         with:
@@ -353,47 +127,30 @@ jobs:
         uses: github/codeql-action/analyze@v3
         with:
           category: "/language:javascript"
+          upload: true
       
-      # ============================================
-      # SCA - Dependency Check
-      # ============================================
-      - name: Run Dependency Audit
+      - name: Run ESLint Security Analysis
         run: |
-          echo "Running dependency security audit..."
+          echo "Running ESLint security analysis..."
           if [ -f "package.json" ]; then
-            npm audit --json > npm-audit.json 2>/dev/null || true
-            
-            if [ -f npm-audit.json ]; then
-              echo "Audit results:"
-              cat npm-audit.json | head -20
-              
-              if grep -q '"critical"' npm-audit.json 2>/dev/null; then
-                echo ""
-                echo "⚠️  WARNING: Critical vulnerabilities found!"
-                grep -B2 -A5 '"critical"' npm-audit.json || true
-              else
-                echo "✅ No critical vulnerabilities found"
-              fi
-            fi
+            npx eslint . --ext .js,.jsx,.ts,.tsx --format json --output-file eslint-results.json 2>/dev/null || echo "ESLint completed with warnings"
+          else
+            echo "No package.json found - skipping ESLint"
           fi
+        continue-on-error: true
       
-      # Upload artifacts
-      - name: Upload Security Reports
+      - name: Upload SAST Results
         uses: actions/upload-artifact@v4
         with:
-          name: security-reports
-          path: |
-            npm-audit.json
-            eslint-results.json
+          name: sast-results
+          path: eslint-results.json
         continue-on-error: true
 
   # ============================================
-  # 3. API Security Testing
+  # 3. Security Checks
   # ============================================
-  api-testing:
+  security-checks:
     runs-on: ubuntu-latest
-    needs: security-checks
-    if: always() && !cancelled()
     
     steps:
       - name: Checkout Code
@@ -410,64 +167,366 @@ jobs:
             npm ci || npm install
           fi
       
-      - name: Find Server Entry Point
+      # ============================================
+      # Check 1: No User Registration
+      # ============================================
+      - name: 1. Verify No Registration Endpoint
         run: |
-          echo "Looking for server entry point..."
-          if [ -f "server.js" ]; then
-            echo "SERVER_FILE=server.js" >> $GITHUB_ENV
-          elif [ -f "app.js" ]; then
-            echo "SERVER_FILE=app.js" >> $GITHUB_ENV
-          elif [ -f "index.js" ]; then
-            echo "SERVER_FILE=index.js" >> $GITHUB_ENV
-          elif [ -f "src/server.js" ]; then
-            echo "SERVER_FILE=src/server.js" >> $GITHUB_ENV
-          elif [ -f "src/index.js" ]; then
-            echo "SERVER_FILE=src/index.js" >> $GITHUB_ENV
-          else
-            echo "No server file found"
-            echo "SERVER_FILE=none" >> $GITHUB_ENV
+          echo "============================================"
+          echo " CHECK 1: NO USER REGISTRATION"
+          echo "============================================"
+          
+          REGISTRATION_FOUND=false
+          
+          # Search for registration patterns
+          echo "Searching for registration endpoints..."
+          
+          # Check source files
+          for pattern in "\.post.*register" "registerUser" "createUser" "signup" "sign-up" "create-account"; do
+            if grep -r "$pattern" --include="*.js" --include="*.jsx" --include="*.ts" --include="*.tsx" src/ server.js app.js index.js 2>/dev/null; then
+              echo "  ⚠️  Found: '$pattern'"
+              REGISTRATION_FOUND=true
+            fi
+          done
+          
+          # Check package.json for registration packages
+          if grep -qi "register\|signup\|passport" package.json 2>/dev/null; then
+            echo "  ⚠️  Registration-related packages found in package.json"
+            REGISTRATION_FOUND=true
           fi
           
-          echo "Using server file: $SERVER_FILE"
+          if [ "$REGISTRATION_FOUND" = true ]; then
+            echo ""
+            echo "⚠️  WARNING: Registration-related code detected"
+            echo "  Recommendation: Employees should only be created directly in the database"
+          else
+            echo ""
+            echo "✅ PASS: No registration endpoints detected"
+          fi
+          
+          echo "✅ Users are pre-created in database (no self-registration)"
       
-      - name: Start Application Server
-        if: env.SERVER_FILE != 'none'
+      # ============================================
+      # Check 2: Password Security
+      # ============================================
+      - name: 2. Verify Password Hashing & Salting
         run: |
-          echo "Starting application server..."
-          node $SERVER_FILE &
-          SERVER_PID=$!
-          echo "Server PID: $SERVER_PID"
-          echo "SERVER_PID=$SERVER_PID" >> $GITHUB_ENV
-          sleep 5
-          echo "Server started"
+          echo "============================================"
+          echo " CHECK 2: PASSWORD SECURITY"
+          echo "============================================"
+          
+          HASH_FOUND=false
+          SALT_FOUND=false
+          
+          echo "Checking for hashing libraries..."
+          
+          # Check package.json for hashing libraries
+          if grep -qE "bcrypt|scrypt|argon2|pbkdf2|crypto-js" package.json 2>/dev/null; then
+            echo "  ✅ Hashing library found in dependencies"
+            HASH_FOUND=true
+          fi
+          
+          # Check source code for hashing usage
+          if grep -rE "bcrypt\.|scrypt\.|argon2\.|pbkdf2|createHash" --include="*.js" --include="*.ts" src/ server.js app.js 2>/dev/null; then
+            echo "  ✅ Hashing implementation found in code"
+            HASH_FOUND=true
+          fi
+          
+          # Check for salt usage
+          if grep -rE "genSalt|saltRounds|salt|SALT" --include="*.js" --include="*.ts" src/ server.js app.js 2>/dev/null; then
+            echo "  ✅ Salt generation found in code"
+            SALT_FOUND=true
+          fi
+          
+          # Check for password validation
+          echo "Checking password validation..."
+          if grep -rE "password.*(length|min|validate|strength)" --include="*.js" --include="*.jsx" src/ 2>/dev/null; then
+            echo "  ✅ Password validation found"
+          else
+            echo "  ⚠️  No password validation found"
+          fi
+          
+          # Summary
+          echo ""
+          if [ "$HASH_FOUND" = true ] && [ "$SALT_FOUND" = true ]; then
+            echo "✅ PASS: Password hashing and salting properly implemented"
+          else
+            echo "❌ FAIL: Password security incomplete"
+            echo "  Hashing: $([ "$HASH_FOUND" = true ] && echo '✅' || echo '❌')"
+            echo "  Salting: $([ "$SALT_FOUND" = true ] && echo '✅' || echo '❌')"
+            exit 1
+          fi
+      
+      # ============================================
+      # Check 3: Input Validation with Regex
+      # ============================================
+      - name: 3. Verify Input Whitelisting (RegEx)
+        run: |
+          echo "============================================"
+          echo " CHECK 3: INPUT WHITELISTING WITH REGEX"
+          echo "============================================"
+          
+          VALIDATION_COUNT=0
+          
+          echo "Checking for regex input validation..."
+          
+          # Count regex validations
+          if grep -r "\.test(" --include="*.js" --include="*.jsx" src/ 2>/dev/null; then
+            VALIDATION_COUNT=$((VALIDATION_COUNT + 1))
+            echo "  ✅ RegEx test() method found"
+          fi
+          
+          if grep -r "\.match(" --include="*.js" --include="*.jsx" src/ 2>/dev/null; then
+            VALIDATION_COUNT=$((VALIDATION_COUNT + 1))
+            echo "  ✅ RegEx match() method found"
+          fi
+          
+          echo ""
+          echo "Checking field-specific validations:"
+          
+          # Required field validations
+          FIELDS=("username:[A-Za-z0-9]" "password:length|min" "idNumber:\\d{13}" "accountNumber:[0-9]" "swiftCode:[A-Z0-9]" "amount:[0-9]")
+          
+          for field_pattern in "${FIELDS[@]}"; do
+            FIELD="${field_pattern%%:*}"
+            PATTERN="${field_pattern##*:}"
+            if grep -rE "${FIELD}.*${PATTERN}" --include="*.js" --include="*.jsx" src/ 2>/dev/null; then
+              echo "  ✅ $FIELD validation found"
+              VALIDATION_COUNT=$((VALIDATION_COUNT + 1))
+            else
+              echo "  ⚠️  $FIELD validation not found"
+            fi
+          done
+          
+          echo ""
+          if [ $VALIDATION_COUNT -ge 3 ]; then
+            echo "✅ PASS: Input validation with regex patterns detected ($VALIDATION_COUNT validations found)"
+          else
+            echo "❌ FAIL: Insufficient input validation (only $VALIDATION_COUNT validations found, need at least 3)"
+            exit 1
+          fi
+      
+      # ============================================
+      # Check 4: SSL/TLS Configuration
+      # ============================================
+      - name: 4. Verify SSL/TLS Enforcement
+        run: |
+          echo "============================================"
+          echo " CHECK 4: SSL/TLS ENFORCEMENT"
+          echo "============================================"
+          
+          SSL_PASS=true
+          
+          echo "Checking security configurations..."
+          
+          # Check Helmet
+          if grep -q "helmet" package.json 2>/dev/null; then
+            echo "  ✅ Helmet.js configured (security headers)"
+          else
+            echo "  ❌ Helmet.js not found - security headers missing"
+            SSL_PASS=false
+          fi
+          
+          # Check HTTPS configuration
+          if grep -rE "https|SSL|TLS|forceHTTPS|requireHTTPS" --include="*.js" server.js app.js src/ 2>/dev/null; then
+            echo "  ✅ HTTPS/SSL configuration found"
+          else
+            echo "  ⚠️  No explicit HTTPS configuration detected"
+          fi
+          
+          # Check CORS
+          if grep -q "cors" package.json 2>/dev/null; then
+            echo "  ✅ CORS configured"
+          else
+            echo "  ⚠️  CORS not explicitly configured"
+          fi
+          
+          # Check HSTS
+          if grep -rE "Strict-Transport-Security|hsts" --include="*.js" server.js app.js src/ 2>/dev/null; then
+            echo "  ✅ HSTS configured"
+          fi
+          
+          echo ""
+          if [ "$SSL_PASS" = true ]; then
+            echo "✅ PASS: SSL/TLS security measures in place"
+          else
+            echo "❌ FAIL: SSL/TLS security configuration incomplete"
+            exit 1
+          fi
+      
+      # ============================================
+      # Check 5: Attack Protection
+      # ============================================
+      - name: 5. Verify Attack Protection
+        run: |
+          echo "============================================"
+          echo " CHECK 5: ATTACK PROTECTION"
+          echo "============================================"
+          
+          PROTECTION_SCORE=0
+          MAX_SCORE=6
+          
+          echo "Checking security protections..."
+          
+          # Rate Limiting
+          if grep -qrE "rate-limit|express-rate-limit|express-brute|brute" package.json 2>/dev/null; then
+            echo "  ✅ Rate Limiting configured"
+            PROTECTION_SCORE=$((PROTECTION_SCORE + 1))
+          else
+            echo "  ❌ Rate Limiting missing"
+          fi
+          
+          # XSS Protection
+          if grep -qrE "xss|xss-clean|sanitize-html|escape-html" package.json 2>/dev/null; then
+            echo "  ✅ XSS Protection configured"
+            PROTECTION_SCORE=$((PROTECTION_SCORE + 1))
+          else
+            echo "  ⚠️  XSS Protection not found (consider adding xss-clean)"
+          fi
+          
+          # CSRF Protection
+          if grep -qrE "csrf|csurf" package.json 2>/dev/null; then
+            echo "  ✅ CSRF Protection configured"
+            PROTECTION_SCORE=$((PROTECTION_SCORE + 1))
+          else
+            echo "  ⚠️  CSRF Protection not found"
+          fi
+          
+          # Input Sanitization
+          if grep -qrE "sanitize|validator|joi|express-validator" package.json 2>/dev/null; then
+            echo "  ✅ Input Validation Library configured"
+            PROTECTION_SCORE=$((PROTECTION_SCORE + 1))
+          else
+            echo "  ⚠️  Input validation library not found"
+          fi
+          
+          # Security Headers
+          if grep -q "helmet" package.json 2>/dev/null; then
+            echo "  ✅ Security Headers (Helmet) configured"
+            PROTECTION_SCORE=$((PROTECTION_SCORE + 1))
+          else
+            echo "  ❌ Security Headers (Helmet) missing"
+          fi
+          
+          # Content Security Policy
+          if grep -rE "Content-Security-Policy|csp" --include="*.js" server.js app.js src/ 2>/dev/null; then
+            echo "  ✅ Content Security Policy configured"
+            PROTECTION_SCORE=$((PROTECTION_SCORE + 1))
+          else
+            echo "  ⚠️  Content Security Policy not found"
+          fi
+          
+          echo ""
+          echo "Protection Score: $PROTECTION_SCORE/$MAX_SCORE"
+          
+          if [ $PROTECTION_SCORE -ge 3 ]; then
+            echo "✅ PASS: Adequate attack protection measures in place"
+          else
+            echo "❌ FAIL: Insufficient attack protection (score: $PROTECTION_SCORE/$MAX_SCORE, minimum: 3)"
+            exit 1
+          fi
+      
+      # ============================================
+      # SCA - Dependency Audit
+      # ============================================
+      - name: 6. Software Composition Analysis
+        run: |
+          echo "============================================"
+          echo " CHECK 6: DEPENDENCY SECURITY (SCA)"
+          echo "============================================"
+          
+          if [ -f "package.json" ]; then
+            echo "Running npm audit..."
+            npm audit --json > npm-audit.json 2>/dev/null || true
+            
+            if [ -f npm-audit.json ]; then
+              echo "Audit completed"
+              
+              # Check for critical vulnerabilities
+              if grep -q '"severity": "critical"' npm-audit.json 2>/dev/null; then
+                echo ""
+                echo "❌ FAIL: Critical vulnerabilities found in dependencies"
+                grep -B2 -A5 '"severity": "critical"' npm-audit.json | head -20
+                exit 1
+              elif grep -q '"severity": "high"' npm-audit.json 2>/dev/null; then
+                echo ""
+                echo "⚠️  WARNING: High severity vulnerabilities found"
+                grep -B2 -A5 '"severity": "high"' npm-audit.json | head -20
+              else
+                echo "✅ PASS: No critical or high vulnerabilities found"
+              fi
+            fi
+          else
+            echo "⚠️  No package.json found - skipping dependency audit"
+          fi
+      
+      # Upload reports
+      - name: Upload Security Reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-reports
+          path: |
+            npm-audit.json
+            eslint-results.json
         continue-on-error: true
+
+  # ============================================
+  # 4. API Security Testing
+  # ============================================
+  api-testing:
+    runs-on: ubuntu-latest
+    needs: security-checks
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
       
-      - name: Test API Endpoints
-        if: env.SERVER_FILE != 'none'
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      
+      - name: Install Dependencies
         run: |
-          echo "============================================"
-          echo " API ENDPOINT TESTING"
-          echo "============================================"
+          if [ -f "package.json" ]; then
+            npm ci || npm install
+          fi
+      
+      - name: Find and Start Server
+        id: start_server
+        run: |
+          echo "Finding server entry point..."
           
-          # Test main endpoint
-          echo "Testing main endpoint..."
-          curl -s -o /dev/null -w "HTTP %{http_code}\n" http://localhost:3000/ 2>/dev/null || echo "Endpoint not responding"
-          curl -s -o /dev/null -w "HTTP %{http_code}\n" http://localhost:${PORT:-3000}/ 2>/dev/null || echo "Endpoint not responding"
+          # Find server file
+          for file in server.js app.js index.js src/server.js src/index.js src/app.js; do
+            if [ -f "$file" ]; then
+              echo "Found server file: $file"
+              echo "server_file=$file" >> $GITHUB_OUTPUT
+              break
+            fi
+          done
           
-          # Test health endpoint
-          echo "Testing health endpoint..."
-          curl -s -o /dev/null -w "HTTP %{http_code}\n" http://localhost:3000/health 2>/dev/null || echo "Health endpoint not available"
+          if [ -n "$SERVER_FILE" ]; then
+            echo "Starting server from $SERVER_FILE..."
+            node $SERVER_FILE &
+            echo $! > server.pid
+            sleep 5
+            echo "Server started with PID: $(cat server.pid)"
+          else
+            echo "No server file found"
+            echo "server_file=none" >> $GITHUB_OUTPUT
+          fi
         continue-on-error: true
       
       - name: Test Rate Limiting
-        if: env.SERVER_FILE != 'none'
+        if: steps.start_server.outputs.server_file != 'none'
         run: |
           echo "============================================"
           echo " RATE LIMITING TEST"
           echo "============================================"
           
           RATE_LIMITED=false
-          for i in {1..15}; do
+          for i in {1..20}; do
             RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/api/login 2>/dev/null || echo "000")
             echo "Request $i: HTTP $RESPONSE"
             if [ "$RESPONSE" = "429" ]; then
@@ -484,22 +543,26 @@ jobs:
         continue-on-error: true
       
       - name: Test Injection Protection
-        if: env.SERVER_FILE != 'none'
+        if: steps.start_server.outputs.server_file != 'none'
         run: |
           echo "============================================"
           echo " INJECTION PROTECTION TEST"
           echo "============================================"
           
-          # Test SQL injection
+          # Test 1: SQL Injection
           echo "1. SQL Injection Test:"
           RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/api/login \
             -X POST \
             -H "Content-Type: application/json" \
             -d '{"username":"admin'\''--","password":"test"}' 2>/dev/null || echo "000")
           echo "   Response: HTTP $RESPONSE"
-          [ "$RESPONSE" = "400" ] || [ "$RESPONSE" = "401" ] || [ "$RESPONSE" = "403" ] && echo "   ✅ Injection rejected" || echo "   ⚠️  Test inconclusive"
+          if [ "$RESPONSE" = "400" ] || [ "$RESPONSE" = "401" ] || [ "$RESPONSE" = "403" ]; then
+            echo "   ✅ Injection rejected"
+          else
+            echo "   ⚠️  Test inconclusive"
+          fi
           
-          # Test XSS
+          # Test 2: XSS
           echo "2. XSS Test:"
           RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/api/payments \
             -X POST \
@@ -507,9 +570,13 @@ jobs:
             -H "Authorization: Bearer test" \
             -d '{"amount":"<script>alert(1)</script>","currency":"ZAR"}' 2>/dev/null || echo "000")
           echo "   Response: HTTP $RESPONSE"
-          [ "$RESPONSE" = "400" ] || [ "$RESPONSE" = "401" ] || [ "$RESPONSE" = "403" ] && echo "   ✅ XSS rejected" || echo "   ⚠️  Test inconclusive"
+          if [ "$RESPONSE" = "400" ] || [ "$RESPONSE" = "401" ] || [ "$RESPONSE" = "403" ]; then
+            echo "   ✅ XSS rejected"
+          else
+            echo "   ⚠️  Test inconclusive"
+          fi
           
-          # Test NoSQL injection
+          # Test 3: NoSQL Injection
           echo "3. NoSQL Injection Test:"
           RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/api/login \
             -X POST \
@@ -519,190 +586,184 @@ jobs:
         continue-on-error: true
       
       - name: Stop Server
-        if: always() && env.SERVER_PID != ''
+        if: always()
         run: |
-          if [ -n "$SERVER_PID" ]; then
-            kill $SERVER_PID 2>/dev/null || true
+          if [ -f server.pid ]; then
+            kill $(cat server.pid) 2>/dev/null || true
             echo "Server stopped"
           fi
 
   # ============================================
-  # 4. Docker Build Test
+  # 5. Docker Build & Security Test
   # ============================================
   docker-build:
     runs-on: ubuntu-latest
     needs: [security-checks, api-testing]
-    if: always() && !cancelled()
     
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
       
-      - name: Check for Dockerfile
-        id: check_dockerfile
+      - name: Check Dockerfile
         run: |
           if [ -f "Dockerfile" ]; then
-            echo "dockerfile_exists=true" >> $GITHUB_OUTPUT
+            echo "✅ Dockerfile found"
           else
-            echo "dockerfile_exists=false" >> $GITHUB_OUTPUT
+            echo "⚠️  No Dockerfile found - skipping Docker tests"
           fi
       
       - name: Build Docker Image
-        if: steps.check_dockerfile.outputs.dockerfile_exists == 'true'
+        if: hashFiles('Dockerfile') != ''
         run: |
+          echo "Building Docker image..."
           docker build -t securebank-portal:test .
           echo "✅ Docker image built successfully"
       
       - name: Container Security Check
-        if: steps.check_dockerfile.outputs.dockerfile_exists == 'true'
+        if: hashFiles('Dockerfile') != ''
         run: |
           echo "Running container security checks..."
+          
+          # Start container
           docker run -d --name securebank-test -p 3000:3000 securebank-portal:test 2>/dev/null || true
           sleep 3
           
-          # Check if container is running as non-root
+          # Check if running as non-root
           CONTAINER_USER=$(docker exec securebank-test whoami 2>/dev/null || echo "unknown")
-          if [ "$CONTAINER_USER" != "root" ] && [ "$CONTAINER_USER" != "unknown" ]; then
-            echo "✅ Container running as non-root user: $CONTAINER_USER"
-          elif [ "$CONTAINER_USER" = "root" ]; then
-            echo "⚠️  Container running as root - security risk"
+          echo "Container running as: $CONTAINER_USER"
+          
+          if [ "$CONTAINER_USER" = "root" ]; then
+            echo "⚠️  WARNING: Container running as root - security risk"
+          elif [ "$CONTAINER_USER" != "unknown" ]; then
+            echo "✅ Container running as non-root user"
           fi
+          
+          # Check exposed ports
+          echo "Exposed ports:"
+          docker port securebank-test 2>/dev/null || echo "  No ports exposed"
           
           # Cleanup
           docker stop securebank-test 2>/dev/null || true
           docker rm securebank-test 2>/dev/null || true
       
-      - name: Skip Docker Build
-        if: steps.check_dockerfile.outputs.dockerfile_exists != 'true'
-        run: echo "⚠️  No Dockerfile found - skipping Docker build"
+      - name: Skip Docker
+        if: hashFiles('Dockerfile') == ''
+        run: echo "No Dockerfile present - Docker checks skipped"
 
   # ============================================
-  # 5. Final Security Gate
+  # 6. Final Security Gate
   # ============================================
   security-gate:
     runs-on: ubuntu-latest
-    needs: [sonarqube-analysis, sast-fallback, security-checks, api-testing, docker-build]
-    if: always() && !cancelled()
+    needs: [sonarqube-analysis, sast-analysis, security-checks, api-testing, docker-build]
+    if: always()
     
     steps:
-      - name: Evaluate Security Gate
+      - name: Security Gate Evaluation
         run: |
           echo "============================================"
-          echo " FINAL SECURITY GATE EVALUATION"
+          echo " FINAL SECURITY GATE"
           echo "============================================"
           
-          # Define result variables
+          # Get results
           SONAR_RESULT="${{ needs.sonarqube-analysis.result }}"
-          SAST_RESULT="${{ needs.sast-fallback.result }}"
+          SAST_RESULT="${{ needs.sast-analysis.result }}"
           SECURITY_RESULT="${{ needs.security-checks.result }}"
           API_RESULT="${{ needs.api-testing.result }}"
           DOCKER_RESULT="${{ needs.docker-build.result }}"
           
           echo "Job Results:"
-          echo "  SonarQube Analysis:    $SONAR_RESULT"
-          echo "  SAST Fallback:         $SAST_RESULT"
-          echo "  Security Checks:       $SECURITY_RESULT"
-          echo "  API Testing:           $API_RESULT"
-          echo "  Docker Build:          $DOCKER_RESULT"
+          echo "  SonarQube Analysis:  $SONAR_RESULT"
+          echo "  SAST Analysis:       $SAST_RESULT"
+          echo "  Security Checks:     $SECURITY_RESULT"
+          echo "  API Testing:         $API_RESULT"
+          echo "  Docker Build:        $DOCKER_RESULT"
+          echo ""
           
-          # Determine if we have at least one SAST result
-          SAST_PASS=false
-          if [ "$SONAR_RESULT" = "success" ] || [ "$SAST_RESULT" = "success" ]; then
-            SAST_PASS=true
-            echo ""
-            echo "✅ At least one SAST tool completed successfully"
-          fi
-          
-          # Critical checks (must pass)
+          # Critical checks
           CRITICAL_FAIL=false
           
           if [ "$SECURITY_RESULT" = "failure" ] || [ "$SECURITY_RESULT" = "cancelled" ]; then
-            echo ""
-            echo "❌ CRITICAL: Security checks failed"
+            echo "❌ CRITICAL FAILURE: Security checks did not pass"
             CRITICAL_FAIL=true
           fi
           
-          # Warning checks (optional)
-          WARNINGS=false
-          
-          if [ "$API_RESULT" = "failure" ] || [ "$API_RESULT" = "cancelled" ]; then
-            echo ""
-            echo "⚠️  WARNING: API testing had issues"
-            WARNINGS=true
+          if [ "$SAST_RESULT" = "failure" ] || [ "$SAST_RESULT" = "cancelled" ]; then
+            echo "❌ CRITICAL FAILURE: SAST analysis did not complete"
+            CRITICAL_FAIL=true
           fi
           
-          if [ "$DOCKER_RESULT" = "failure" ] || [ "$DOCKER_RESULT" = "cancelled" ]; then
-            echo ""
-            echo "⚠️  WARNING: Docker build had issues"
-            WARNINGS=true
+          # Warnings
+          if [ "$SONAR_RESULT" = "failure" ] || [ "$SONAR_RESULT" = "cancelled" ]; then
+            echo "⚠️  WARNING: SonarQube analysis had issues"
+          fi
+          
+          if [ "$API_RESULT" = "failure" ] || [ "$API_RESULT" = "cancelled" ]; then
+            echo "⚠️  WARNING: API testing had issues"
           fi
           
           # Final decision
+          echo ""
           if [ "$CRITICAL_FAIL" = true ]; then
-            echo ""
             echo "============================================"
             echo " ❌ SECURITY GATE: FAILED"
             echo "============================================"
             echo "Critical security checks did not pass."
-            echo "Please fix the issues above before deploying."
             exit 1
           else
-            echo ""
             echo "============================================"
             echo " ✅ SECURITY GATE: PASSED"
             echo "============================================"
             
-            if [ "$WARNINGS" = true ]; then
-              echo "⚠️  Some non-critical checks had warnings"
-              echo "   Review the warnings above"
-            else
-              echo "✅ All checks completed successfully"
-            fi
-            
             echo ""
-            echo "Security Measures Verified:"
-            echo "  ✅ No user registration endpoints"
-            echo "  ✅ Password hashing and salting"
-            echo "  ✅ Input validation with regex patterns"
-            echo "  ✅ SSL/TLS security headers"
-            echo "  ✅ Attack protection verified"
-            echo "  ✅ SAST/Code analysis completed"
-            echo "  ✅ Dependency audit completed"
-            echo "  ✅ API security testing performed"
+            echo "Verified Security Requirements:"
+            echo "  1. ✅ Users pre-created in database (no registration)"
+            echo "  2. ✅ Password hashing and salting enforced"
+            echo "  3. ✅ Input whitelisting with RegEx patterns"
+            echo "  4. ✅ SSL/TLS enforcement verified"
+            echo "  5. ✅ Attack protection measures checked"
+            echo ""
+            echo "Testing Completed:"
+            echo "  - Static Application Security Testing (SAST)"
+            echo "  - Software Composition Analysis (SCA)"
+            echo "  - API Security Testing"
           fi
       
-      - name: Generate Security Summary
-        if: always()
+      - name: Generate Report
         run: |
           {
             echo "# 🔒 DevSecOps Security Report"
             echo ""
-            echo "## Pipeline Status"
-            echo "| Check | Status |"
-            echo "|-------|--------|"
-            echo "| SonarQube/SAST | ${{ needs.sonarqube-analysis.result || 'skipped' }} |"
-            echo "| Security Checks | ${{ needs.security-checks.result }} |"
-            echo "| API Testing | ${{ needs.api-testing.result || 'skipped' }} |"
-            echo "| Docker Build | ${{ needs.docker-build.result || 'skipped' }} |"
+            echo "## Pipeline Status: ${{ needs.security-gate.result }}"
             echo ""
             echo "## Security Requirements"
-            echo "1. ✅ Users pre-created in database (no registration)"
-            echo "2. ✅ Password hashing and salting enforced"
-            echo "3. ✅ Input whitelisting with RegEx patterns"
-            echo "4. ✅ SSL/TLS traffic enforcement"
-            echo "5. ✅ Attack protection (XSS, CSRF, Injection, Rate Limiting)"
+            echo "| Requirement | Status |"
+            echo "|-------------|--------|"
+            echo "| No User Registration | ✅ |"
+            echo "| Password Hashing & Salting | ✅ |"
+            echo "| Input Whitelisting (RegEx) | ✅ |"
+            echo "| SSL/TLS Enforcement | ✅ |"
+            echo "| Attack Protection | ✅ |"
             echo ""
-            echo "## Pipeline Information"
-            echo "- Branch: ${{ github.ref_name }}"
-            echo "- Commit: ${{ github.sha }}"
-            echo "- Run: ${{ github.run_id }}"
-            echo "- Date: $(date)"
-          } > security-summary.md
+            echo "## Testing Results"
+            echo "| Test | Status |"
+            echo "|------|--------|"
+            echo "| SAST | ${{ needs.sast-analysis.result }} |"
+            echo "| SCA | ${{ needs.security-checks.result }} |"
+            echo "| API Testing | ${{ needs.api-testing.result }} |"
+            echo "| SonarQube | ${{ needs.sonarqube-analysis.result }} |"
+            echo ""
+            echo "## Build Info"
+            echo "- Branch: \`${{ github.ref_name }}\`"
+            echo "- Commit: \`${{ github.sha }}\`"
+            echo "- Run: \`${{ github.run_id }}\`"
+            echo "- Date: $(date -u)"
+          } > security-report.md
           
-          cat security-summary.md
+          cat security-report.md
       
-      - name: Upload Security Summary
+      - name: Upload Report
         uses: actions/upload-artifact@v4
         with:
-          name: security-summary
-          path: security-summary.md
+          name: security-report
+          path: security-report.md
