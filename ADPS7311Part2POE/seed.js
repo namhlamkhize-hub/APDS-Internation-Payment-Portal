@@ -19,7 +19,17 @@ const employees = [
   username: "employee2",
   password: "Employee@123",
   role: "employee",
-},,
+}, 
+ 
+
+  {
+  fullName: "James Brown",
+  idNumber: "7501015009087",
+  accountNumber: "100003",
+  username: "employee3",
+  password: "Employee@123nn",
+  role: "employee",
+} ,
 ];
 
 const seed = async () => {
