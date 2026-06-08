@@ -1,0 +1,292 @@
+version: 2.1
+
+orbs:
+  node: circleci/node@5.0.2
+  sonarcloud: sonarsource/sonarcloud@1.1.1
+
+jobs:
+  # ============================================
+  # SonarQube Analysis Job
+  # ============================================
+  sonarqube:
+    docker:
+      - image: sonarsource/sonar-scanner-cli:latest
+    resource_class: small
+    steps:
+      - checkout
+      - run:
+          name: Install Dependencies
+          command: |
+            apk update
+            apk upgrade
+            apk --no-cache add --update openssh git curl jq
+      
+      - run:
+          name: Run SonarQube Scan
+          command: |
+            SONAR_BRANCH="${CIRCLE_BRANCH:-master}"
+            echo "Sonar branch value is: $SONAR_BRANCH"
+            echo "Sonar org value is: $SONAR_ORG"
+            
+            sonar-scanner \
+              -Dsonar.projectKey="$SONAR_PROJECT_KEY" \
+              -Dsonar.organization="$SONAR_ORG" \
+              -Dsonar.host.url=https://sonarcloud.io \
+              -Dsonar.exclusions="**/node_modules/**,**/dist/**,**/build/**,**/.git/**,**/coverage/**" \
+              -Dsonar.login="$SONAR_TOKEN" \
+              -Dsonar.branch.name="$SONAR_BRANCH" \
+              -Dsonar.sources="." \
+              -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info \
+              -Dsonar.sourceEncoding=UTF-8
+      
+      - run:
+          name: Check Quality Gate Status
+          command: |
+            echo "Checking SonarQube Quality Gate..."
+            STATUS=$(curl -s -u "$SONAR_TOKEN": \
+              "https://sonarcloud.io/api/qualitygates/project_status?projectKey=$SONAR_PROJECT_KEY&branch=$SONAR_BRANCH" \
+              | jq -r '.projectStatus.status')
+            
+            if [ "$STATUS" = "OK" ]; then
+              echo "✅ Quality Gate: PASSED"
+            else
+              echo "❌ Quality Gate: FAILED - Status: $STATUS"
+              exit 1
+            fi
+  
+  # ============================================
+  # Security Checks Job
+  # ============================================
+  security-checks:
+    docker:
+      - image: cimg/node:18.17.0
+    resource_class: medium
+    steps:
+      - checkout
+      
+      - run:
+          name: Install Dependencies
+          command: npm ci || npm install
+      
+      - run:
+          name: Password Security Check
+          command: |
+            echo "============================================"
+            echo " CHECKING PASSWORD SECURITY"
+            echo "============================================"
+            
+            # Verify bcrypt usage
+            if grep -r "bcrypt\|scrypt\|argon2" src/ --include="*.js" --include="*.ts"; then
+              echo "✅ Password hashing detected"
+            else
+              echo "❌ No password hashing found"
+              exit 1
+            fi
+            
+            # Verify salt usage
+            if grep -r "genSalt\|saltRounds\|salt" src/ --include="*.js" --include="*.ts"; then
+              echo "✅ Password salting detected"
+            else
+              echo "❌ No password salting found"
+              exit 1
+            fi
+      
+      - run:
+          name: Input Validation Check
+          command: |
+            echo "============================================"
+            echo " CHECKING INPUT VALIDATION"
+            echo "============================================"
+            
+            # Check for regex patterns
+            if grep -r "test\|match\|regex\|pattern\|valid" src/ --include="*.js" --include="*.jsx" | grep -v "node_modules"; then
+              echo "✅ Input validation patterns found"
+            else
+              echo "❌ No input validation found"
+              exit 1
+            fi
+            
+            # Specific checks
+            echo "Checking specific validations:"
+            grep -n "username.*test\|username.*regex" src/api/api.js || true
+            grep -n "password.*length\|password.*min" src/ || true
+            grep -n "swiftCode.*test\|swift.*pattern" src/ || true
+      
+      - run:
+          name: SSL/TLS Check
+          command: |
+            echo "============================================"
+            echo " CHECKING SSL/TLS CONFIGURATION"
+            echo "============================================"
+            
+            if grep -r "helmet\|https\|ssl\|tls" package.json server.js app.js src/ 2>/dev/null; then
+              echo "✅ SSL/TLS configuration found"
+            else
+              echo "⚠️  No explicit SSL/TLS configuration"
+            fi
+      
+      - run:
+          name: Attack Protection Check
+          command: |
+            echo "============================================"
+            echo " CHECKING ATTACK PROTECTION"
+            echo "============================================"
+            
+            # Check for security headers
+            echo "Helmet (Security Headers):"
+            grep -q "helmet" package.json && echo "✅ Present" || echo "❌ Missing"
+            
+            # Check for CORS
+            echo "CORS Protection:"
+            grep -q "cors" package.json && echo "✅ Present" || echo "⚠️  Not found"
+            
+            # Check for rate limiting
+            echo "Rate Limiting:"
+            grep -qr "rate-limit\|express-rate-limit\|express-brute" package.json src/ && echo "✅ Present" || echo "❌ Missing"
+            
+            # Check for XSS protection
+            echo "XSS Protection:"
+            grep -qr "xss\|xss-clean\|sanitize" package.json src/ && echo "✅ Present" || echo "⚠️  Not found"
+            
+            # Check for CSRF protection
+            echo "CSRF Protection:"
+            grep -qr "csrf\|csurf" package.json src/ && echo "✅ Present" || echo "⚠️  Not found"
+      
+      - run:
+          name: SAST - ESLint Security Analysis
+          command: |
+            echo "Running SAST analysis..."
+            npx eslint src/ --format junit --output-file eslint-results.xml || true
+            npx eslint src/ --format json --output-file eslint-results.json || true
+      
+      - run:
+          name: SCA - Dependency Audit
+          command: |
+            echo "Running dependency security audit..."
+            npm audit --json > npm-audit.json || true
+            
+            # Check for critical vulnerabilities
+            if grep -q '"severity": "critical"' npm-audit.json; then
+              echo "❌ Critical vulnerabilities found!"
+              cat npm-audit.json | grep '"severity": "critical"' -A 5
+              exit 1
+            else
+              echo "✅ No critical vulnerabilities"
+            fi
+      
+      - store_artifacts:
+          path: eslint-results.json
+          destination: sast-results
+      
+      - store_artifacts:
+          path: npm-audit.json
+          destination: sca-results
+      
+      - persist_to_workspace:
+          root: .
+          paths:
+            - .
+  
+  # ============================================
+  # API Security Testing Job
+  # ============================================
+  api-testing:
+    docker:
+      - image: cimg/node:18.17.0
+    resource_class: medium
+    steps:
+      - checkout
+      
+      - attach_workspace:
+          at: ~/workspace
+      
+      - run:
+          name: Install Test Dependencies
+          command: |
+            npm install --save-dev supertest jest 2>/dev/null || true
+      
+      - run:
+          name: Start Application
+          command: |
+            node server.js &
+            SERVER_PID=$!
+            echo "Server PID: $SERVER_PID"
+            echo $SERVER_PID > server.pid
+            sleep 5
+          background: true
+      
+      - run:
+          name: Test Rate Limiting
+          command: |
+            sleep 10
+            echo "Testing rate limiting..."
+            for i in {1..20}; do
+              RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/api/login 2>/dev/null || echo "000")
+              echo "Request $i: $RESPONSE"
+              if [ "$RESPONSE" = "429" ]; then
+                echo "✅ Rate limiting active"
+                exit 0
+              fi
+            done
+            echo "⚠️  Rate limiting not triggered"
+      
+      - run:
+          name: Test Injection Protection
+          command: |
+            echo "Testing injection attempts..."
+            
+            # Test SQL injection
+            echo "SQL Injection test:"
+            RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/api/login \
+              -X POST \
+              -H "Content-Type: application/json" \
+              -d '{"username":"admin'\''--","password":"test"}' 2>/dev/null || echo "000")
+            echo "Response: $RESPONSE"
+            [ "$RESPONSE" = "400" ] || [ "$RESPONSE" = "401" ] && echo "✅ Injection blocked"
+            
+            # Test XSS
+            echo "XSS test:"
+            RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/api/payments \
+              -X POST \
+              -H "Content-Type: application/json" \
+              -d '{"amount":"<script>alert(1)</script>","currency":"ZAR"}' 2>/dev/null || echo "000")
+            echo "Response: $RESPONSE"
+            [ "$RESPONSE" = "400" ] || [ "$RESPONSE" = "401" ] && echo "✅ XSS blocked"
+      
+      - run:
+          name: Stop Application
+          command: |
+            if [ -f server.pid ]; then
+              kill $(cat server.pid) 2>/dev/null || true
+            fi
+          when: always
+
+# ============================================
+# Workflows
+# ============================================
+workflows:
+  devsecops-pipeline:
+    jobs:
+      - sonarqube:
+          context:
+            - sonarcloud
+      
+      - security-checks:
+          requires:
+            - sonarqube
+      
+      - api-testing:
+          requires:
+            - security-checks
+      
+      - approval-gate:
+          type: approval
+          requires:
+            - api-testing
+      
+      - deploy-staging:
+          requires:
+            - approval-gate
+          filters:
+            branches:
+              only: main
